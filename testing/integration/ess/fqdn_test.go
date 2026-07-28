@@ -280,8 +280,7 @@ func verifyHostNameInIndices(t *testing.T, indices, hostname, since, namespace s
 		},
 	}
 
-	var buf bytes.Buffer
-	err := json.NewEncoder(&buf).Encode(queryRaw)
+	queryBytes, err := json.Marshal(queryRaw)
 	require.NoError(t, err)
 
 	search := esClient.Search
@@ -289,12 +288,16 @@ func verifyHostNameInIndices(t *testing.T, indices, hostname, since, namespace s
 	require.EventuallyWithT(
 		t,
 		func(collect *assert.CollectT) {
+			// bytes.NewReader must be called inside the closure: WithBody accepts an
+			// io.Reader which is consumed on the first HTTP send. Reusing the same
+			// reader across retries would send an empty body and silently match all
+			// documents regardless of hostname.
 			resp, err := search(
 				search.WithIndex(indices),
 				search.WithSort("@timestamp:desc"),
 				search.WithFilterPath("hits.hits"),
 				search.WithSize(1),
-				search.WithBody(&buf),
+				search.WithBody(bytes.NewReader(queryBytes)),
 			)
 			require.NoError(collect, err)
 			require.False(collect, resp.IsError())
