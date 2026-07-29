@@ -109,6 +109,13 @@ func ESToOTelConfig(output *config.C, _ string, logger *logp.Logger) (map[string
 	if err != nil {
 		return nil, nil, fmt.Errorf("error creating hosts:%w", err)
 	}
+	// BENCHMARK ARM B: double the connection count for the balanced and scale
+	// presets (both ship worker: 1), keeping num_consumers equal to it as today.
+	maxConns := getTotalNumWorkers(output)
+	if escfg.Preset == "balanced" || escfg.Preset == "scale" {
+		maxConns *= 2
+	}
+
 	otelYAMLCfg := map[string]any{
 		"endpoints": hosts, // hosts, protocol, path, port
 
@@ -117,7 +124,7 @@ func ESToOTelConfig(output *config.C, _ string, logger *logp.Logger) (map[string
 		// where it could spin as many goroutines as it liked.
 		// Given that batcher implementation can change and it has a history of such changes,
 		// let's keep max_conns_per_host setting for now and remove it once exporterhelper is stable.
-		"max_conns_per_host": getTotalNumWorkers(output), // num_workers * len(hosts) if loadbalance is true
+		"max_conns_per_host": maxConns, // num_workers * len(hosts) if loadbalance is true, doubled for balanced/scale
 
 		"sending_queue": map[string]any{
 			"batch": map[string]any{
@@ -130,7 +137,7 @@ func ESToOTelConfig(output *config.C, _ string, logger *logp.Logger) (map[string
 			"queue_size":        getQueueSize(logger, output),
 			"block_on_overflow": true,
 			"wait_for_result":   true,
-			"num_consumers":     getTotalNumWorkers(output), // num_workers * len(hosts) if loadbalance is true
+			"num_consumers":     maxConns, // kept equal to max_conns_per_host
 		},
 
 		"logs_dynamic_pipeline": map[string]any{
