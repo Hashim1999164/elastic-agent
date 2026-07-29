@@ -102,9 +102,11 @@ func TestKubernetesAgentHelmRBACDeadlock(t *testing.T) {
 		}),
 		k8sStepCheckAgentStatus("name=agent-pernode-helm-agent", schedulableNodeCount, "agent", nil),
 		k8sStepInstallKubernetesIntegration(info.KibanaClient, kCtx.enrollParams.PolicyID, &packagePolicyID),
-		// Wait until kubernetes/metrics-default appears in agent status
-		// (it may be degraded due to 403s, but it should be running).
-		k8sStepWaitForComponentPresent("name=agent-pernode-helm-agent", schedulableNodeCount, "agent",
+		// Wait until kubernetes/metrics-default is Degraded — meaning the
+		// informers have attempted LIST calls and received 403 responses, so
+		// WaitForCacheSync is blocked and holding resourceWatchers.lock.
+		// That is the exact precondition required to trigger the deadlock.
+		k8sStepWaitForComponentDegraded("name=agent-pernode-helm-agent", schedulableNodeCount, "agent",
 			"kubernetes/metrics-default", 3*time.Minute),
 		// Removing the integration triggers elastic-otel-collector Shutdown().
 		// With the bug the component stays in STOPPING forever; with the fix it
@@ -211,10 +213,13 @@ func k8sStepDeleteFleetPackage(kc *kibana.Client, policyID *string) k8sTestStep 
 	}
 }
 
-// k8sStepWaitForComponentPresent polls elastic-agent status inside each pod
-// matched by selector until the named component appears (in any state) or the
-// timeout expires.
-func k8sStepWaitForComponentPresent(
+// k8sStepWaitForComponentDegraded polls elastic-agent status inside each pod
+// matched by selector until the named component reaches Degraded state or the
+// timeout expires.  Waiting for Degraded (rather than merely present) ensures
+// that the kubernetes informers have attempted their LIST calls and received
+// 403 responses, which means WaitForCacheSync is blocked and holding
+// resourceWatchers.lock — the precondition required to trigger the deadlock.
+func k8sStepWaitForComponentDegraded(
 	agentPodLabelSelector string, expectedPodNumber int, containerName string,
 	componentName string, timeout time.Duration,
 ) k8sTestStep {
@@ -224,10 +229,14 @@ func k8sStepWaitForComponentPresent(
 		for _, pod := range podList.Items {
 			require.EventuallyWithT(t, func(c *assert.CollectT) {
 				status := execAgentStatus(ctx, kCtx, namespace, pod.Name, containerName)
-				_, found := getAgentComponentState(status, componentName)
+				state, found := getAgentComponentState(status, componentName)
 				assert.True(c, found, "component %s not yet present in pod %s", componentName, pod.Name)
+				if found {
+					assert.Equal(c, int(aclient.Degraded), state,
+						"component %s in pod %s is not yet Degraded (state=%d)", componentName, pod.Name, state)
+				}
 			}, timeout, 2*time.Second,
-				"component %s did not appear in pod %s within %s", componentName, pod.Name, timeout)
+				"component %s did not reach Degraded in pod %s within %s", componentName, pod.Name, timeout)
 		}
 	}
 }
