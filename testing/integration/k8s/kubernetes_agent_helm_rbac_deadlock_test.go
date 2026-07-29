@@ -260,7 +260,7 @@ func k8sStepAssertComponentNotStuck(
 // getFleetPackageVersion queries the Fleet EPM API for the latest version of
 // the named integration package.
 func getFleetPackageVersion(ctx context.Context, kc *kibana.Client, packageName string) (string, error) {
-	resp, err := kc.Connection.SendWithContext(ctx, http.MethodGet,
+	resp, err := kc.SendWithContext(ctx, http.MethodGet,
 		"/api/fleet/epm/packages/"+packageName, nil, nil, nil)
 	if err != nil {
 		return "", fmt.Errorf("querying EPM for %s: %w", packageName, err)
