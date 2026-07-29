@@ -109,6 +109,34 @@ func ESToOTelConfig(output *config.C, _ string, logger *logp.Logger) (map[string
 	if err != nil {
 		return nil, nil, fmt.Errorf("error creating hosts:%w", err)
 	}
+	// BENCHMARK ARM E: run 2x num_consumers per connection and size the in-flight
+	// event budget for two batches per *consumer* rather than per worker.
+	//
+	// The presets provision queue.mem.events = 2 * flush.min_events * worker (holds
+	// for all four presets), i.e. two batches per output worker: one in flight, one
+	// staging. That rule is sized for the classic path, where an admitted event sits
+	// in the memqueue, an output worker, or in-flight HTTP. The receiver path spreads
+	// the same budget over more stages -- slabqueue FIFO, the unbounded per-batch
+	// Publish goroutines doing eventsToLogs plus early encoding, the exporter's
+	// sending queue, and the batcher accumulating toward min_size -- so less than one
+	// full batch is ever actually on the wire and producers stall in slabqueue
+	// reserve() while CPU sits idle.
+	//
+	// Tie the budget to num_consumers so the double-buffer rule tracks real
+	// concurrency. max_conns_per_host is deliberately left alone: the goal is equal
+	// or better EPS at an unchanged connection count, so ES-side load is identical.
+	maxConns := getTotalNumWorkers(output)
+	numConsumers := 2 * maxConns
+	queueSize := 2 * getFlushMinEvents(logger, output) * numConsumers
+
+	// Mutate the output config so both consumers of queue.mem.events pick up the new
+	// budget: getQueueSize below (the exporter's queue_size) and the queue block that
+	// otelconfig.go promotes into the beat receiver section, which becomes the
+	// slabqueue live-event cap that reserve() blocks on.
+	if err := output.SetInt("queue.mem.events", -1, int64(queueSize)); err != nil {
+		return nil, nil, fmt.Errorf("failed setting queue.mem.events: %w", err)
+	}
+
 	otelYAMLCfg := map[string]any{
 		"endpoints": hosts, // hosts, protocol, path, port
 
@@ -117,7 +145,7 @@ func ESToOTelConfig(output *config.C, _ string, logger *logp.Logger) (map[string
 		// where it could spin as many goroutines as it liked.
 		// Given that batcher implementation can change and it has a history of such changes,
 		// let's keep max_conns_per_host setting for now and remove it once exporterhelper is stable.
-		"max_conns_per_host": getTotalNumWorkers(output), // num_workers * len(hosts) if loadbalance is true
+		"max_conns_per_host": maxConns, // num_workers * len(hosts) if loadbalance is true -- intentionally unchanged
 
 		"sending_queue": map[string]any{
 			"batch": map[string]any{
@@ -130,7 +158,7 @@ func ESToOTelConfig(output *config.C, _ string, logger *logp.Logger) (map[string
 			"queue_size":        getQueueSize(logger, output),
 			"block_on_overflow": true,
 			"wait_for_result":   true,
-			"num_consumers":     getTotalNumWorkers(output), // num_workers * len(hosts) if loadbalance is true
+			"num_consumers":     numConsumers, // 2x max_conns_per_host
 		},
 
 		"logs_dynamic_pipeline": map[string]any{
