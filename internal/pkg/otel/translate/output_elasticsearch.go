@@ -130,7 +130,10 @@ func ESToOTelConfig(output *config.C, _ string, logger *logp.Logger) (map[string
 			"queue_size":        getQueueSize(logger, output),
 			"block_on_overflow": true,
 			"wait_for_result":   true,
-			"num_consumers":     getTotalNumWorkers(output), // num_workers * len(hosts) if loadbalance is true
+			// BENCHMARK ARM A: num_consumers is always 2x max_conns_per_host, so a
+			// second bulk request can be prepared while the first is in flight
+			// (wait_for_result is true, so one consumer stalls for the whole round trip).
+			"num_consumers": 2 * getTotalNumWorkers(output),
 		},
 
 		"logs_dynamic_pipeline": map[string]any{
