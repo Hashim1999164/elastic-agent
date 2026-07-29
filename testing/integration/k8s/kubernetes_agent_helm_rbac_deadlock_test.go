@@ -9,11 +9,11 @@ package k8s
 // Regression test for https://github.com/elastic/elastic-agent/issues/15666.
 //
 // When the kubernetes integration runs with insufficient RBAC (some state_*
-// informers cannot sync due to 403), a subsequent config reload causes
-// elastic-otel-collector to deadlock in Shutdown(): enricher.Start() holds
-// resourceWatchers.lock while blocked inside WaitForCacheSync(), and
-// enricher.Stop() can never acquire that lock to cancel the watcher context.
-// The component stays in STOPPING forever.
+// informers cannot sync due to 403), a subsequent config reload deadlocks in
+// the beats kubernetes enricher: enricher.Start() holds resourceWatchers.lock
+// while blocked inside WaitForCacheSync(), and enricher.Stop() can never
+// acquire that lock to cancel the watcher context.  The component stays in
+// STOPPING forever.
 
 import (
 	"bytes"
@@ -38,18 +38,19 @@ import (
 	"github.com/elastic/elastic-agent/pkg/testing/define"
 )
 
-// TestKubernetesAgentHelmRBACDeadlock deploys elastic-agent in Fleet-managed
-// mode with a stripped ClusterRole (state_* resources removed), installs the
-// kubernetes integration, then removes it to trigger a config reload.  Before
-// the fix the component would stay in STOPPING indefinitely; after the fix it
-// must reach STOPPED within the assertion timeout.
+// TestKubernetesAgentHelmRBACDeadlock deploys elastic-agent via Helm in
+// Fleet-managed mode with a stripped ClusterRole (state_* resources removed),
+// installs the kubernetes integration, then removes it to trigger a config
+// reload.  Before the fix the component would stay in STOPPING indefinitely;
+// after the fix it must leave STOPPING within the assertion timeout.
 func TestKubernetesAgentHelmRBACDeadlock(t *testing.T) {
 	info := define.Require(t, define.Requirements{
 		Stack: &define.Stack{},
 		Local: false,
 		Sudo:  false,
 		OS: []define.OS{
-			{Type: define.Kubernetes, DockerVariant: "elastic-otel-collector"},
+			{Type: define.Kubernetes, DockerVariant: "basic"},
+			{Type: define.Kubernetes, DockerVariant: "wolfi"},
 		},
 		Group: define.Kubernetes,
 	})
