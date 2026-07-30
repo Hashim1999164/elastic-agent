@@ -415,11 +415,6 @@ replace (
 	go.opentelemetry.io/collector/service => github.com/elastic/opentelemetry-collector/service v0.0.0-20260709135846-86a6a75a9057
 )
 
-// Use a fork of opentelemetry-collector-contrib that serializes at ingest in the
-// elasticsearch exporter. Fork: https://github.com/blakerouse/opentelemetry-collector-contrib
-// commit d77fd65cf6eb on branch esexporter-serialize-at-ingest.
-replace github.com/open-telemetry/opentelemetry-collector-contrib/exporter/elasticsearchexporter => github.com/blakerouse/opentelemetry-collector-contrib/exporter/elasticsearchexporter v0.0.0-20260729121820-d77fd65cf6eb
-
 // Replace statements carried forward from Beats https://github.com/elastic/beats/blob/0678f4d96212ac968fc90596e60475ed2f3979e1/go.mod#L503
 replace (
 	github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/consumption/armconsumption => github.com/elastic/azure-sdk-for-go/sdk/resourcemanager/consumption/armconsumption v1.1.0-elastic

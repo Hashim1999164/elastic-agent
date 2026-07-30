@@ -7,11 +7,6 @@ replace github.com/elastic/elastic-agent => ../../
 
 replace github.com/elastic/beats/v7 => ../../beats
 
-// Use a fork of opentelemetry-collector-contrib that serializes at ingest in the
-// elasticsearch exporter. Fork: https://github.com/blakerouse/opentelemetry-collector-contrib
-// commit d77fd65cf6eb on branch esexporter-serialize-at-ingest.
-replace github.com/open-telemetry/opentelemetry-collector-contrib/exporter/elasticsearchexporter => github.com/blakerouse/opentelemetry-collector-contrib/exporter/elasticsearchexporter v0.0.0-20260729121820-d77fd65cf6eb
-
 // The fork above requires cilium/ebpf v0.22.0, which removed btf.FlushKernelSpec.
 // github.com/elastic/ebpfevents v0.9.0 (its newest release) still calls it, so the
 // linux build breaks. Pin back to v0.21.0, the version main already uses -- this also
