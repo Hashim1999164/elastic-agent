@@ -129,6 +129,21 @@ func ESToOTelConfig(output *config.C, _ string, logger *logp.Logger) (map[string
 	numConsumers := 2 * maxConns
 	queueSize := 2 * getFlushMinEvents(logger, output) * numConsumers
 
+	// BENCHMARK ARM G3: pin the balanced/scale event budget to 5600 to locate the knee
+	// of the EPS-vs-budget curve at one connection with bulk_max_size and
+	// flush.min_events fixed at 1600 (so ES-side work per request is identical to
+	// classic). Measured: 3200 is too small to saturate the connection (9.7k EPS,
+	// ~90ms dead time per request) while 6400 saturates it (20.4k EPS, ~0 dead time),
+	// so the minimum saturating budget lies between. RSS fits ~313MB + 27.7KB per
+	// resident event, so the smallest saturating budget gives the best EPS/RSS point.
+	//
+	// throughput and latency keep arm E's formula so they stay unchanged across these
+	// arms and remain valid run-to-run drift controls -- build 4803 showed ~7%
+	// cluster variance between runs, which is larger than the effect being measured.
+	if escfg.Preset == "balanced" || escfg.Preset == "scale" {
+		queueSize = 5600
+	}
+
 	// Mutate the output config so both consumers of queue.mem.events pick up the new
 	// budget: getQueueSize below (the exporter's queue_size) and the queue block that
 	// otelconfig.go promotes into the beat receiver section, which becomes the
