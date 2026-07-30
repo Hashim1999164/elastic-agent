@@ -129,6 +129,27 @@ func ESToOTelConfig(output *config.C, _ string, logger *logp.Logger) (map[string
 	numConsumers := 2 * maxConns
 	queueSize := 2 * getFlushMinEvents(logger, output) * numConsumers
 
+	// BENCHMARK ARM H: for balanced/scale only, run 1 consumer per connection (today's
+	// mapping) at budget 4800, to isolate whether the 2x consumer bump is load-bearing
+	// or whether the event budget alone explains arm E's gain.
+	//
+	// G2 already ran consumers=2 at this exact budget and got 15,773 EPS on scale, so
+	// this is a matched-budget comparison with consumers as the only variable. Note H is
+	// better provisioned than G2 despite the identical budget: one consumer forms only
+	// one 1600-item request, so it locks 1600 events and leaves 3200 free for staging,
+	// where G2 locks 3200 and leaves 1600. If H still loses, the second consumer matters
+	// for handoff latency rather than budget accounting.
+	//
+	// 4800 is comfortably above the C=1 deadlock floor of (1+1)*min_size = 3200. That
+	// floor is exactly the shipped default, which stalls for lack of staging slack.
+	//
+	// throughput and latency keep arm E's formula so they stay identical across arms E,
+	// G1-G3 and H, and remain valid run-to-run drift controls (~7% cluster variance).
+	if escfg.Preset == "balanced" || escfg.Preset == "scale" {
+		numConsumers = maxConns
+		queueSize = 4800
+	}
+
 	// Mutate the output config so both consumers of queue.mem.events pick up the new
 	// budget: getQueueSize below (the exporter's queue_size) and the queue block that
 	// otelconfig.go promotes into the beat receiver section, which becomes the
