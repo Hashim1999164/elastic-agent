@@ -8,12 +8,13 @@ package k8s
 
 // Regression test for https://github.com/elastic/elastic-agent/issues/15666.
 //
-// When the kubernetes integration runs with insufficient RBAC (some state_*
-// informers cannot sync due to 403), a subsequent config reload deadlocks in
-// the beats kubernetes enricher: enricher.Start() holds resourceWatchers.lock
-// while blocked inside WaitForCacheSync(), and enricher.Stop() can never
-// acquire that lock to cancel the watcher context.  The component stays in
-// STOPPING forever.
+// The beats kubernetes enricher always starts a namespace extra-watcher (the
+// add_resource_metadata.namespace option defaults to enabled).  When the
+// service account lacks RBAC for namespaces the informer's LIST returns 403,
+// WaitForCacheSync blocks inside watcher.Start(), and enricher.Start() holds
+// resourceWatchers.lock for the lifetime of that blocked call.
+// enricher.Stop() also needs the lock → unresolvable deadlock → component
+// stays in STOPPING forever.
 
 import (
 	"bytes"
@@ -102,11 +103,12 @@ func TestKubernetesAgentHelmRBACDeadlock(t *testing.T) {
 		}),
 		k8sStepCheckAgentStatus("name=agent-pernode-helm-agent", schedulableNodeCount, "agent", nil),
 		k8sStepInstallKubernetesIntegration(info.KibanaClient, kCtx.enrollParams.PolicyID, &packagePolicyID),
-		// Wait until kubernetes/metrics-default is Degraded — meaning the
-		// informers have attempted LIST calls and received 403 responses, so
-		// WaitForCacheSync is blocked and holding resourceWatchers.lock.
-		// That is the exact precondition required to trigger the deadlock.
-		k8sStepWaitForComponentDegraded("name=agent-pernode-helm-agent", schedulableNodeCount, "agent",
+		// Wait until kubernetes/metrics-default appears in any state.  Because
+		// the namespace watcher blocks in WaitForCacheSync (403 due to missing
+		// RBAC), the component is perpetually STARTING — it never transitions
+		// to Healthy or Degraded.  Once it appears the deadlock precondition is
+		// met: enricher.Start() is holding resourceWatchers.lock.
+		k8sStepWaitForComponentPresent("name=agent-pernode-helm-agent", schedulableNodeCount, "agent",
 			"kubernetes/metrics-default", 3*time.Minute),
 		// Removing the integration triggers elastic-otel-collector Shutdown().
 		// With the bug the component stays in STOPPING forever; with the fix it
@@ -124,12 +126,15 @@ func TestKubernetesAgentHelmRBACDeadlock(t *testing.T) {
 	}
 }
 
-// k8sStepCreateRestrictedK8sClusterRole creates a ClusterRole that grants only
-// the minimum permissions the kubernetes integration needs for pod/node/event
-// collection, deliberately omitting the state_* resources (services,
-// deployments, daemonsets, statefulsets, jobs, cronjobs, persistentvolumes,
-// persistentvolumeclaims, storageclasses).  This reproduces the RBAC
-// misconfiguration from https://github.com/elastic/elastic-agent/issues/15666.
+// k8sStepCreateRestrictedK8sClusterRole creates a ClusterRole that grants
+// pod/node/event collection permissions but intentionally omits namespaces.
+//
+// The beats kubernetes enricher always starts a namespace extra-watcher when
+// add_resource_metadata.namespace is enabled (the default).  Without
+// namespaces RBAC the informer's LIST call returns 403, so WaitForCacheSync
+// blocks inside watcher.Start(), and enricher.Start() holds
+// resourceWatchers.lock the entire time.  That is the exact precondition for
+// the deadlock: a concurrent enricher.Stop() can never acquire the lock.
 func k8sStepCreateRestrictedK8sClusterRole(roleName string) k8sTestStep {
 	return func(t *testing.T, ctx context.Context, kCtx k8sContext, namespace string) {
 		cr := &rbacv1.ClusterRole{
@@ -139,8 +144,8 @@ func k8sStepCreateRestrictedK8sClusterRole(roleName string) k8sTestStep {
 			Rules: []rbacv1.PolicyRule{
 				{
 					APIGroups: []string{""},
+					// namespaces intentionally omitted — see function comment.
 					Resources: []string{
-						"namespaces",
 						"pods",
 						"nodes",
 						"nodes/metrics",
@@ -213,13 +218,10 @@ func k8sStepDeleteFleetPackage(kc *kibana.Client, policyID *string) k8sTestStep 
 	}
 }
 
-// k8sStepWaitForComponentDegraded polls elastic-agent status inside each pod
-// matched by selector until the named component reaches Degraded state or the
-// timeout expires.  Waiting for Degraded (rather than merely present) ensures
-// that the kubernetes informers have attempted their LIST calls and received
-// 403 responses, which means WaitForCacheSync is blocked and holding
-// resourceWatchers.lock — the precondition required to trigger the deadlock.
-func k8sStepWaitForComponentDegraded(
+// k8sStepWaitForComponentPresent polls elastic-agent status inside each pod
+// matched by selector until the named component appears in any state or the
+// timeout expires.
+func k8sStepWaitForComponentPresent(
 	agentPodLabelSelector string, expectedPodNumber int, containerName string,
 	componentName string, timeout time.Duration,
 ) k8sTestStep {
@@ -229,14 +231,10 @@ func k8sStepWaitForComponentDegraded(
 		for _, pod := range podList.Items {
 			require.EventuallyWithT(t, func(c *assert.CollectT) {
 				status := execAgentStatus(ctx, kCtx, namespace, pod.Name, containerName)
-				state, found := getAgentComponentState(status, componentName)
+				_, found := getAgentComponentState(status, componentName)
 				assert.True(c, found, "component %s not yet present in pod %s", componentName, pod.Name)
-				if found {
-					assert.Equal(c, int(aclient.Degraded), state,
-						"component %s in pod %s is not yet Degraded (state=%d)", componentName, pod.Name, state)
-				}
 			}, timeout, 2*time.Second,
-				"component %s did not reach Degraded in pod %s within %s", componentName, pod.Name, timeout)
+				"component %s did not appear in pod %s within %s", componentName, pod.Name, timeout)
 		}
 	}
 }
