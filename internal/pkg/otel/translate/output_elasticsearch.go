@@ -80,6 +80,31 @@ func ESToOTelConfig(output *config.C, _ string, logger *logp.Logger) (map[string
 			preset, strings.Join(overriddenFields, ","))
 	}
 
+	// BENCHMARK ARM F: raise bulk_max_size 4x for the balanced and scale presets to
+	// test empirically whether a single connection has headroom left.
+	//
+	// Build 4802 (arm E) fits a per-request cost curve from two same-build, one-
+	// connection points: latency (50 docs, 4.13ms/request) and scale (1600 docs,
+	// 78.4ms/request). That gives ~1.73ms fixed per request plus ~47.9us per doc, so a
+	// serialized connection asymptotes at 1/47.9us ~= 20,900 EPS. Scale already
+	// measured 20,396, i.e. ~98% of that, predicting only ~+1.8% at 6400 docs. If the
+	// model is right this arm lands near 20,750; a materially larger jump falsifies it
+	// and means per-request overhead still dominates.
+	//
+	// flush.min_events moves with bulk_max_size so the exporter keeps min_size ==
+	// max_size, which is how balanced/scale are configured today (both 1600). It also
+	// feeds the arm E budget formula below, so the event budget scales with the larger
+	// batch (2 * 6400 * 2 consumers = 25600) and the batcher can still double-buffer.
+	if preset == "balanced" || preset == "scale" {
+		const benchBulkMaxSize = 6400
+		if err := output.SetInt("bulk_max_size", -1, benchBulkMaxSize); err != nil {
+			return nil, nil, fmt.Errorf("failed setting bulk_max_size: %w", err)
+		}
+		if err := output.SetInt("queue.mem.flush.min_events", -1, benchBulkMaxSize); err != nil {
+			return nil, nil, fmt.Errorf("failed setting queue.mem.flush.min_events: %w", err)
+		}
+	}
+
 	unpackedMap := make(map[string]any)
 	// unpack and validate ES config
 	if err := output.Unpack(&unpackedMap); err != nil {
